@@ -7,6 +7,10 @@
 > 前提: `flutter create . --org com.syncnews` でネイティブ足場を生成済みであること。
 > 既存の `lib/` は上書きされない。
 
+> ⚡ **自動適用**: 下記の手作業（Info.plist / AndroidManifest / MainActivity）は
+> `bash scripts/setup_native.sh` で一括適用できる（`flutter create` 込み・冪等）。
+> 仕組みを理解したうえで使うこと。以下は手動で行う場合の詳細。
+
 ---
 
 ## iOS
