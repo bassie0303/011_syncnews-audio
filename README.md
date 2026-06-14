@@ -159,7 +159,9 @@ curl -s localhost:8000/api/health | jq   # キー有無の確認
 ```
 
 ## 6. Phase1 残タスク
-- [ ] `backend/main.py` の GPT-4o / ElevenLabs 実装（現在スタブ）
+- [x] `backend/main.py` の GPT-4o 抽出/翻訳 + ElevenLabs TTS 実装
+- [ ] 実APIキーでの疎通テスト（抽出→翻訳→TTS→Storage/DB 保存の一気通貫）
+- [ ] ja/en の文数アライメント検証（翻訳1:1崩れ時の `mapPositionForLanguageSwitch` 挙動）
 - [ ] Supabase realtime で記事ストリーム購読（`PlaylistScreen`へ接続）
 - [ ] `receive_sharing_intent` でブラウザ共有メニュー受け取り配線
 - [ ] 自動スクロールを `scrollable_positioned_list` に置換（長文最適化）

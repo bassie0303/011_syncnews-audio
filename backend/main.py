@@ -32,13 +32,27 @@ _BACKEND_DIR = Path(__file__).resolve().parent
 load_dotenv(_BACKEND_DIR.parent.parent / ".env", override=True)  # claude_test/.env
 load_dotenv(_BACKEND_DIR / ".env", override=True)               # backend/.env
 
+import base64  # noqa: E402
+import json  # noqa: E402
+
+import httpx  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
+from openai import AsyncOpenAI  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 from supabase import Client, create_client  # noqa: E402
 
 app = FastAPI(title="SyncNews Audio Convert Worker")
 
 Lang = Literal["ja", "en"]
+
+# 抽出・翻訳に使う GPT モデル。
+_GPT_MODEL = "gpt-4o"
+# ElevenLabs の多言語モデル（日英ともこの1モデルで可）。
+_ELEVEN_MODEL = "eleven_multilingual_v2"
+
+
+def _openai() -> AsyncOpenAI:
+    return AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
 def _supabase() -> Client:
@@ -121,22 +135,122 @@ async def convert(req: ConvertRequest) -> dict:
 # --- パイプライン各段（実装ポイント。MVPで埋める）---
 
 
+_TAG_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+_HTML_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"[ \t]*\n[ \t\n]*")
+
+
+def _html_to_text(html: str) -> str:
+    """GPT に渡す前の軽量クリーニング。script/style とタグを除去し空白を畳む。"""
+    html = _TAG_RE.sub(" ", html)
+    text = _HTML_RE.sub(" ", html)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = _WS_RE.sub("\n", text)
+    # GPT のトークン上限・コスト対策に過大な入力は頭側を採用（記事本文は前方に集中）。
+    return text.strip()[:24000]
+
+
 async def extract_article(url: str) -> tuple[str, str, Lang]:
-    """本文・タイトル・言語をGPT-4oでJSON抽出するのが手堅い。"""
-    raise NotImplementedError("TODO: GPT-4o で本文抽出・言語判定")
+    """記事URLを取得し、GPT-4o でタイトル・本文・言語をJSON抽出する。"""
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=30,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; SyncNewsBot/0.1)"},
+    ) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+    cleaned = _html_to_text(resp.text)
+
+    client = _openai()
+    completion = await client.chat.completions.create(
+        model=_GPT_MODEL,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "あなたはWebニュースの本文抽出器です。与えられたページテキストから、"
+                    "ナビ・広告・関連記事・コメントを除いた『記事本文』だけを抽出します。"
+                    'JSONで {"title": str, "body": str, "lang": "ja"|"en"} を返してください。'
+                    "body は段落を改行で区切り、原文の言語のまま。lang は本文の主言語。"
+                ),
+            },
+            {"role": "user", "content": cleaned},
+        ],
+    )
+    data = json.loads(completion.choices[0].message.content or "{}")
+    lang: Lang = "en" if data.get("lang") == "en" else "ja"
+    return data.get("title", "").strip(), data.get("body", "").strip(), lang
 
 
 async def translate(text: str, target: Lang) -> str:
-    """GPT-4o。フロントの言語切替(index一致)が効くよう「1行=1文」で訳す。"""
-    raise NotImplementedError("TODO: GPT-4o 翻訳（1行1文を厳守）")
+    """GPT-4o で対向言語へ翻訳。
+
+    フロントの言語切替(index一致)を効かせるため『1行=1文』を厳守させ、
+    原文と訳文の文数・順序を一致させる。
+    """
+    target_name = "英語" if target == "en" else "日本語"
+    client = _openai()
+    completion = await client.chat.completions.create(
+        model=_GPT_MODEL,
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"あなたはプロの翻訳者です。入力を自然な{target_name}に翻訳します。"
+                    "重要な制約: 出力は『1行に1文』。入力を文単位に分け、"
+                    "原文の文数・順序と1対1で対応させること（文を統合/分割しない）。"
+                    "余計な見出し・注釈・番号は付けない。"
+                ),
+            },
+            {"role": "user", "content": text},
+        ],
+    )
+    return (completion.choices[0].message.content or "").strip()
 
 
-async def tts_with_timestamps(
-    text: str, lang: Lang
-) -> tuple[bytes, list[dict]]:
-    """ElevenLabs /with-timestamps を呼ぶ。voice は lang で出し分け。
-    返り値: (音声bytes, [{'char','start_ms','end_ms'}, ...])"""
-    raise NotImplementedError("TODO: ElevenLabs with-timestamps")
+async def tts_with_timestamps(text: str, lang: Lang) -> tuple[bytes, list[dict]]:
+    """ElevenLabs /with-timestamps を呼び、音声と文字単位タイムスタンプを得る。
+
+    返り値: (mp3 bytes, [{'char', 'start_ms', 'end_ms'}, ...])
+    """
+    voice = os.environ[
+        "ELEVENLABS_VOICE_EN" if lang == "en" else "ELEVENLABS_VOICE_JA"
+    ]
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice}/with-timestamps"
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(
+            url,
+            headers={
+                "xi-api-key": os.environ["ELEVENLABS_API_KEY"],
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": text,
+                "model_id": _ELEVEN_MODEL,
+                "output_format": "mp3_44100_128",
+            },
+        )
+        resp.raise_for_status()
+    payload = resp.json()
+
+    audio = base64.b64decode(payload["audio_base64"])
+    align = payload["alignment"]
+    chars = [
+        {
+            "char": ch,
+            "start_ms": round(s * 1000),
+            "end_ms": round(e * 1000),
+        }
+        for ch, s, e in zip(
+            align["characters"],
+            align["character_start_times_seconds"],
+            align["character_end_times_seconds"],
+        )
+    ]
+    return audio, chars
 
 
 _SENT_END = re.compile(r"[。．.!?！？\n]")
