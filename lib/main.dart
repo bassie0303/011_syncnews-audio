@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'services/audio_player_handler.dart';
+import 'services/permissions.dart';
 import 'theme/app_theme.dart';
 import 'features/home/home_shell.dart';
 import 'dev/mock_entry.dart';
@@ -31,6 +32,13 @@ Future<void> main() async {
   audioHandler = await initAudioService();
 
   runApp(const ProviderScope(child: SyncNewsApp()));
+
+  // 初回フレーム後（Activity 復帰後）に通知許可を要求する。
+  // 再生でフォアグラウンドサービスを起動する前に許可を得ておくことで、
+  // startForeground 未呼び出しによる ANR を防ぐ。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    ensureNotificationPermission();
+  });
 }
 
 class SyncNewsApp extends StatelessWidget {

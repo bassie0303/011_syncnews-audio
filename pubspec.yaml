@@ -22,6 +22,7 @@ dependencies:
   flutter_riverpod: ^2.5.1      # アプリ全体の状態管理
   rxdart: ^0.27.7              # 複数ストリームの合成 (position + duration + state)
   receive_sharing_intent: ^1.8.0 # ブラウザ共有メニューからのURL受け取り
+  permission_handler: ^11.3.1   # Android13+ の通知許可（メディア通知/FGSの前提）
   cached_network_image: ^3.3.1
   google_fonts: ^6.2.1
 
