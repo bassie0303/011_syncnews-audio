@@ -143,8 +143,12 @@ OpenAI TTS単体では取れない（Whisperでの forced-alignment が別途必
 - **`ios/`・`android/` は `flutter create` 生成済み** — `setup_native.sh` でバックグラウンド音声・
   共有intent設定を適用済み。ただし **iOS Share Extension は未完**（`ios/ShareExtension/` は雛形のみ、
   Xcodeでのターゲット追加＋App Group が必要）。
-- **検証状況** — Web（同期プレーヤーUI）と Android エミュ（ビルド・共有受け取り・バックグラウンド音声・
-  通知）は確認済み。**iOS実機と、変換ワーカーの実APIキー疎通は未検証**。ElevenLabsレスポンスの
-  `alignment` キー名は初回疎通時に要確認。
+- **検証状況** — Web（同期プレーヤーUI）/ Android エミュ（ビルド・共有受け取り・バックグラウンド音声・
+  通知）/ **変換ワーカー実API疎通**（抽出→翻訳→TTS+TS、ElevenLabs `with-timestamps` 形式一致）まで確認済み。
+  **iOS実機は未検証**。
+- **日英の文数アライメント未解決** — 実データで `aggregate_to_sentences` 後の文数が ja≠en になる
+  （翻訳が厳密な1:1でないため。空セグメントは除去済みだが残差あり）。現状は
+  `mapPositionForLanguageSwitch` の相対進捗フォールバックで動くが、言語切替の完全な行一致には
+  **文単位翻訳（source を文分割→各文を個別翻訳して index を保証）** が要る。（→ 不変条件：翻訳の1:1）
 - **独立したネストgitリポジトリ** — 親 `claude_test`（`article-summarizer.git`）とは別に、本ディレクトリ
   直下に独自の `.git` を持ち `github.com/bassie0303/011_syncnews-audio` を origin とする。

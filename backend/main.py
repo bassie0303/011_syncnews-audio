@@ -254,18 +254,27 @@ async def tts_with_timestamps(text: str, lang: Lang) -> tuple[bytes, list[dict]]
 
 
 _SENT_END = re.compile(r"[。．.!?！？\n]")
+# 区切り記号・空白を除いて実体（文字）が残るか＝中身のある文かの判定用
+_CONTENT = re.compile(r"[^\s。．.!?！？、,…「」『』（）()]")
 
 
 def aggregate_to_sentences(chars: list[dict]) -> list[dict]:
-    """文字タイムスタンプを文(。/./!/?)単位の SyncSegment へ集約。"""
+    """文字タイムスタンプを文(。/./!/?)単位の SyncSegment へ集約。
+
+    「。\\n」のような区切りの連続で生じる空セグメント（テキスト空・尺ゼロ）は捨てる。
+    これを残すと日英の文数が水増しされ、index 串刺しの言語切替がズレる。
+    """
     out: list[dict] = []
     buf = ""
     start = chars[0]["start_ms"] if chars else 0
     for c in chars:
         buf += c["char"]
         if _SENT_END.search(c["char"]):
-            out.append({"text": buf.strip(), "start_ms": start, "end_ms": c["end_ms"]})
+            text = buf.strip()
+            if _CONTENT.search(text):  # 記号・空白だけの文はスキップ
+                out.append({"text": text, "start_ms": start, "end_ms": c["end_ms"]})
             buf, start = "", c["end_ms"]
-    if buf.strip():
-        out.append({"text": buf.strip(), "start_ms": start, "end_ms": chars[-1]["end_ms"]})
+    tail = buf.strip()
+    if _CONTENT.search(tail):
+        out.append({"text": tail, "start_ms": start, "end_ms": chars[-1]["end_ms"]})
     return out
