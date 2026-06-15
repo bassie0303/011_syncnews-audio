@@ -1,20 +1,20 @@
 import 'package:flutter/material.dart';
 import '../../models/article.dart';
-import '../../services/audio_player_handler.dart';
-import '../player/player_screen.dart';
 
 /// プレイリスト / ストック画面（PRD 3-2）。
 /// コンバート済み記事の一覧。URLペースト or 共有メニュー経由で追加する。
 class PlaylistScreen extends StatelessWidget {
   final List<Article> articles;
-  final SyncAudioHandler audio;
+  final bool loading;
   final Future<void> Function(String url) onAddUrl;
+  final Future<void> Function(Article article) onOpen;
 
   const PlaylistScreen({
     super.key,
     required this.articles,
-    required this.audio,
     required this.onAddUrl,
+    required this.onOpen,
+    this.loading = false,
   });
 
   @override
@@ -26,15 +26,17 @@ class PlaylistScreen extends StatelessWidget {
         label: const Text('記事URLを追加'),
         onPressed: () => _showAddDialog(context),
       ),
-      body: articles.isEmpty
-          ? const Center(child: Text('記事URLを追加してコンバートを始めましょう'))
-          : ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: articles.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (context, i) =>
-                  _ArticleCard(article: articles[i], audio: audio),
-            ),
+      body: loading && articles.isEmpty
+          ? const Center(child: CircularProgressIndicator())
+          : articles.isEmpty
+              ? const Center(child: Text('記事URLを追加してコンバートを始めましょう'))
+              : ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: articles.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (context, i) =>
+                      _ArticleCard(article: articles[i], onOpen: onOpen),
+                ),
     );
   }
 
@@ -64,8 +66,8 @@ class PlaylistScreen extends StatelessWidget {
 
 class _ArticleCard extends StatelessWidget {
   final Article article;
-  final SyncAudioHandler audio;
-  const _ArticleCard({required this.article, required this.audio});
+  final Future<void> Function(Article article) onOpen;
+  const _ArticleCard({required this.article, required this.onOpen});
 
   @override
   Widget build(BuildContext context) {
@@ -80,15 +82,7 @@ class _ArticleCard extends StatelessWidget {
           child: _StatusChip(status: article.status),
         ),
         trailing: ready ? const Icon(Icons.play_circle_fill, size: 36) : null,
-        onTap: ready
-            ? () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        PlayerScreen(article: article, audio: audio),
-                  ),
-                )
-            : null,
+        onTap: ready ? () => onOpen(article) : null,
       ),
     );
   }

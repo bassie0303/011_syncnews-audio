@@ -1,44 +1,71 @@
 import 'package:flutter/material.dart';
 
 import '../../models/article.dart';
+import '../../services/article_repository.dart';
 import '../../services/audio_player_handler.dart';
+import '../../services/convert_api.dart';
 import '../../services/share_receiver.dart';
+import '../player/player_screen.dart';
 import '../playlist/playlist_screen.dart';
 
-/// アプリの通常ホーム。プレイリストを表示しつつ、ブラウザの共有メニューから
-/// 渡されたURLを受け取って変換フローに流す（PRD 3-1 の方法2）。
+/// アプリの通常ホーム。
+///  - Supabase の記事一覧をリアルタイム購読して表示
+///  - URLペースト/共有メニューで受け取ったURL → 記事行作成 + 変換ワーカー起動
+///  - 準備完了の記事タップ → tracks/segments を取得してプレーヤーへ
 class HomeShell extends StatefulWidget {
   const HomeShell({
     super.key,
-    required this.articles,
     required this.audio,
-    required this.onAddUrl,
+    required this.convertApiBase,
   });
 
-  final List<Article> articles;
   final SyncAudioHandler audio;
-  final Future<void> Function(String url) onAddUrl;
+  final String convertApiBase;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
 
 class _HomeShellState extends State<HomeShell> {
+  final ArticleRepository _repo = ArticleRepository();
   final ShareReceiver _share = ShareReceiver();
+  late final ConvertApi _convert = ConvertApi(widget.convertApiBase);
 
   @override
   void initState() {
     super.initState();
-    // 共有シートから来たURLを受け取り → 変換開始＋フィードバック表示
-    _share.start(_handleSharedUrl);
+    _share.start(_addUrl); // 共有メニューからのURLも同じ導線へ
   }
 
-  Future<void> _handleSharedUrl(String url) async {
+  /// URL受け取り → articles行作成 → 変換ワーカー起動。
+  Future<void> _addUrl(String url) async {
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(
-      SnackBar(content: Text('共有を受け取りました：変換を開始します\n$url')),
-    );
-    await widget.onAddUrl(url);
+    try {
+      final id = await _repo.create(url);
+      await _convert.start(articleId: id, sourceUrl: url);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('変換を開始しました。準備完了まで少しお待ちください')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('追加に失敗しました: $e')));
+    }
+  }
+
+  /// 一覧の記事（メタのみ）→ 再生用にフル取得してプレーヤーへ遷移。
+  Future<void> _open(Article article) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final full = await _repo.fetchFull(article.id);
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PlayerScreen(article: full, audio: widget.audio),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('記事の取得に失敗しました: $e')));
+    }
   }
 
   @override
@@ -49,10 +76,16 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    return PlaylistScreen(
-      articles: widget.articles,
-      audio: widget.audio,
-      onAddUrl: widget.onAddUrl,
+    return StreamBuilder<List<Article>>(
+      stream: _repo.watch(),
+      builder: (context, snapshot) {
+        return PlaylistScreen(
+          articles: snapshot.data ?? const <Article>[],
+          loading: snapshot.connectionState == ConnectionState.waiting,
+          onAddUrl: _addUrl,
+          onOpen: _open,
+        );
+      },
     );
   }
 }

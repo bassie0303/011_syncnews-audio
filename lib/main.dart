@@ -7,7 +7,6 @@ import 'services/permissions.dart';
 import 'theme/app_theme.dart';
 import 'features/home/home_shell.dart';
 import 'dev/mock_entry.dart';
-import 'models/article.dart';
 
 /// アプリ全体で共有する単一のオーディオハンドラ。
 late final SyncAudioHandler audioHandler;
@@ -18,6 +17,12 @@ const bool kDevMock = bool.fromEnvironment('DEV_MOCK');
 
 const String _supabaseUrl = String.fromEnvironment('SUPABASE_URL');
 const String _supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+
+/// 変換ワーカー（Railway）のベースURL。`--dart-define=CONVERT_API_BASE=...`
+const String _convertApiBase = String.fromEnvironment('CONVERT_API_BASE');
+
+/// Supabase が設定済みか（本番ホーム動作の前提）。
+const bool _supabaseReady = _supabaseUrl != '' && _supabaseAnonKey != '';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,15 +60,36 @@ class SyncNewsApp extends StatelessWidget {
       home: kDevMock
           // 開発検証: モック記事を同期プレーヤーに直行（Supabase不要）
           ? MockEntry(audio: audioHandler)
-          : HomeShell(
-              articles: const <Article>[], // TODO: Supabase からストリーム購読
-              audio: audioHandler,
-              onAddUrl: (url) async {
-                // TODO: Railway の変換ワーカー `POST {CONVERT_API}/api/convert`
-                //       (body: {article_id, source_url}) を呼び出してコンバート開始。
-                //       article 行は事前に status=pending で Supabase に作成しておく。
-              },
-            ),
+          : _supabaseReady
+              ? HomeShell(
+                  audio: audioHandler,
+                  convertApiBase: _convertApiBase,
+                )
+              : const _SetupNeededScreen(),
+    );
+  }
+}
+
+/// Supabase 未設定で起動された場合の案内（本番ホームは Supabase 前提）。
+class _SetupNeededScreen extends StatelessWidget {
+  const _SetupNeededScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('SyncNews Audio')),
+      body: const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(
+          child: Text(
+            'Supabase が未設定です。\n'
+            '--dart-define=SUPABASE_URL / SUPABASE_ANON_KEY / CONVERT_API_BASE '
+            'を指定して起動してください。\n'
+            '（動作確認だけなら --dart-define=DEV_MOCK=true）',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ),
     );
   }
 }
