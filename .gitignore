@@ -36,3 +36,6 @@ backend/__pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# 変換スモークテストの出力（mp3/json）
+scripts/out/
