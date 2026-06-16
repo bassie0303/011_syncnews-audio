@@ -95,6 +95,31 @@ async def convert(req: ConvertRequest, background_tasks: BackgroundTasks) -> dic
     return {"ok": True, "accepted": True}
 
 
+@app.delete("/api/articles/{article_id}")
+def delete_article(article_id: str) -> dict:
+    """記事を削除する（履歴削除／進行中ならコンバートのキャンセルを兼ねる）。
+
+    Storage の音声を削除し、articles 行を削除（cascade で tracks/segments も消える）。
+    進行中の変換は、パイプラインのチェックポイントが行の消失を検知して中断する。
+    """
+    sb = _supabase()
+    try:
+        items = sb.storage.from_("audio").list(article_id)
+        paths = [f"{article_id}/{it['name']}" for it in items]
+        if paths:
+            sb.storage.from_("audio").remove(paths)
+    except Exception:  # noqa: BLE001
+        import traceback
+
+        print(traceback.format_exc(), flush=True)  # 音声削除失敗は致命的でない
+    sb.table("articles").delete().eq("id", article_id).execute()
+    return {"ok": True}
+
+
+def _article_exists(sb: Client, article_id: str) -> bool:
+    return bool(sb.table("articles").select("id").eq("id", article_id).execute().data)
+
+
 async def _run_pipeline(article_id: str, source_url: str) -> None:
     """記事を変換して日英の tracks/segments を生成する（バックグラウンド実行）。"""
     sb = _supabase()
@@ -103,6 +128,8 @@ async def _run_pipeline(article_id: str, source_url: str) -> None:
     try:
         # 1. 本文抽出（言語判定込み）
         title, body, lang = await extract_article(source_url)
+        if not _article_exists(sb, article_id):  # キャンセル(削除)済み
+            return
         sb.table("articles").update(
             {"title": title, "source_lang": lang}
         ).eq("id", article_id).execute()
@@ -113,6 +140,9 @@ async def _run_pipeline(article_id: str, source_url: str) -> None:
 
         # 3. 各言語で 合成+TS -> 文集約 -> Storage/DB 保存
         #    ja は漢字の誤読を避けるためカナ読みで合成（表示は原文の漢字）。
+        #    重いTTSの前にキャンセル（削除）を確認して無駄な課金を避ける。
+        if not _article_exists(sb, article_id):
+            return
         for l, text in ((lang, body), (target, translated)):
             audio_bytes, segments = await synthesize_segments(text, l)
 

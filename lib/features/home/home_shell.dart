@@ -57,6 +57,22 @@ class _HomeShellState extends State<HomeShell> {
     }
   }
 
+  /// 記事の削除（進行中ならコンバートのキャンセルを兼ねる）。
+  /// 実体削除は backend(service_role) 経由。一覧からは Realtime で除去される。
+  Future<void> _delete(Article article) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final canceling = article.status == ConvertStatus.pending ||
+        article.status == ConvertStatus.processing;
+    try {
+      await _convert.deleteArticle(article.id);
+      messenger.showSnackBar(
+        SnackBar(content: Text(canceling ? 'コンバートをキャンセルしました' : '削除しました')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('操作に失敗しました: $e')));
+    }
+  }
+
   /// 一覧の記事（メタのみ）→ 再生用にフル取得してプレーヤーへ遷移。
   Future<void> _open(Article article) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -90,6 +106,7 @@ class _HomeShellState extends State<HomeShell> {
           loading: snapshot.connectionState == ConnectionState.waiting,
           onAddUrl: _addUrl,
           onOpen: _open,
+          onDelete: _delete,
         );
       },
     );

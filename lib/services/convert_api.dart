@@ -30,4 +30,16 @@ class ConvertApi {
       throw Exception('変換ワーカー応答エラー: ${res.statusCode} ${res.body}');
     }
   }
+
+  /// 記事を削除（履歴削除／進行中ならコンバートのキャンセルを兼ねる）。
+  /// Storage音声とDB行（cascadeでtracks/segments）を service_role で削除する。
+  Future<void> deleteArticle(String articleId) async {
+    if (baseUrl.isEmpty) {
+      throw StateError('CONVERT_API_BASE が未設定です');
+    }
+    final res = await http.delete(Uri.parse('$baseUrl/api/articles/$articleId'));
+    if (res.statusCode != 200) {
+      throw Exception('削除に失敗: ${res.statusCode} ${res.body}');
+    }
+  }
 }

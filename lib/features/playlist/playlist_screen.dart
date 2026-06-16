@@ -8,12 +8,14 @@ class PlaylistScreen extends StatelessWidget {
   final bool loading;
   final Future<void> Function(String url) onAddUrl;
   final Future<void> Function(Article article) onOpen;
+  final Future<void> Function(Article article) onDelete;
 
   const PlaylistScreen({
     super.key,
     required this.articles,
     required this.onAddUrl,
     required this.onOpen,
+    required this.onDelete,
     this.loading = false,
   });
 
@@ -34,8 +36,11 @@ class PlaylistScreen extends StatelessWidget {
                   padding: const EdgeInsets.all(16),
                   itemCount: articles.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 12),
-                  itemBuilder: (context, i) =>
-                      _ArticleCard(article: articles[i], onOpen: onOpen),
+                  itemBuilder: (context, i) => _ArticleCard(
+                    article: articles[i],
+                    onOpen: onOpen,
+                    onDelete: onDelete,
+                  ),
                 ),
     );
   }
@@ -67,21 +72,72 @@ class PlaylistScreen extends StatelessWidget {
 class _ArticleCard extends StatelessWidget {
   final Article article;
   final Future<void> Function(Article article) onOpen;
-  const _ArticleCard({required this.article, required this.onOpen});
+  final Future<void> Function(Article article) onDelete;
+  const _ArticleCard({
+    required this.article,
+    required this.onOpen,
+    required this.onDelete,
+  });
+
+  bool get _inProgress =>
+      article.status == ConvertStatus.pending ||
+      article.status == ConvertStatus.processing;
+
+  Future<void> _confirmDelete(BuildContext context) async {
+    // 進行中＝キャンセル（確認なしで即実行）、それ以外＝削除（確認あり）
+    if (_inProgress) {
+      await onDelete(article);
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('削除しますか？'),
+        content: Text(article.title, maxLines: 3),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('キャンセル')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('削除')),
+        ],
+      ),
+    );
+    if (ok == true) await onDelete(article);
+  }
 
   @override
   Widget build(BuildContext context) {
     final ready = article.status == ConvertStatus.ready;
     return Card(
       child: ListTile(
-        contentPadding: const EdgeInsets.all(16),
+        contentPadding: const EdgeInsets.fromLTRB(16, 16, 8, 16),
         title: Text(article.title,
             maxLines: 2, style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 6),
           child: _StatusChip(status: article.status),
         ),
-        trailing: ready ? const Icon(Icons.play_circle_fill, size: 36) : null,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (ready)
+              IconButton(
+                icon: const Icon(Icons.play_circle_fill, size: 36),
+                onPressed: () => onOpen(article),
+              ),
+            PopupMenuButton<String>(
+              onSelected: (_) => _confirmDelete(context),
+              itemBuilder: (ctx) => [
+                PopupMenuItem(
+                  value: 'delete',
+                  child: Text(_inProgress ? 'コンバートをキャンセル' : '削除'),
+                ),
+              ],
+            ),
+          ],
+        ),
         onTap: ready ? () => onOpen(article) : null,
       ),
     );
