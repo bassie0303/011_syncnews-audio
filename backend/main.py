@@ -102,6 +102,34 @@ async def convert(req: ConvertRequest, background_tasks: BackgroundTasks) -> dic
     return {"ok": True, "accepted": True}
 
 
+async def _eleven_subscription() -> dict:
+    """ElevenLabs の利用状況（使用済み/上限文字数）を取得して残量を計算する。"""
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            "https://api.elevenlabs.io/v1/user/subscription",
+            headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]},
+        )
+        resp.raise_for_status()
+    data = resp.json()
+    used = int(data.get("character_count", 0))
+    limit = int(data.get("character_limit", 0))
+    return {"used": used, "limit": limit, "remaining": max(0, limit - used)}
+
+
+@app.get("/api/quota")
+async def quota() -> dict:
+    """ElevenLabs の残クレジット（文字数）。登録前の残量表示に使う。"""
+    try:
+        return {"ok": True, **await _eleven_subscription()}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+def _tts_char_count(text: str, lang: Lang) -> int:
+    """その言語で ElevenLabs に実際に送る文字数（ja はカナ読み）。"""
+    return len(_to_reading_ja(text) if lang == "ja" else text)
+
+
 @app.post("/api/submit")
 def submit(req: SubmitRequest, background_tasks: BackgroundTasks) -> dict:
     """URL だけで「記事行の作成＋変換開始」を1発で行う（PC導線用）。
