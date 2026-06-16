@@ -11,6 +11,7 @@ create table articles (
   title       text not null default '(無題)',
   source_lang text not null check (source_lang in ('ja','en')),
   status      convert_status not null default 'pending',
+  published_at timestamptz,                  -- 記事の公開日時（抽出時に取得・取れなければnull）
   created_at  timestamptz not null default now()
 );
 

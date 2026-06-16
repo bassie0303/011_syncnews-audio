@@ -117,7 +117,32 @@ class _ArticleCard extends StatelessWidget {
             maxLines: 2, style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Padding(
           padding: const EdgeInsets.only(top: 6),
-          child: _StatusChip(status: article.status),
+          child: Row(
+            children: [
+              _StatusChip(status: article.status),
+              if (article.publishedLabel != null) ...[
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.schedule,
+                          size: 13, color: Colors.grey.shade500),
+                      const SizedBox(width: 3),
+                      Flexible(
+                        child: Text(
+                          article.publishedLabel!,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 12, color: Colors.grey.shade600),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,

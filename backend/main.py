@@ -269,13 +269,14 @@ async def _run_pipeline(article_id: str, source_url: str) -> None:
     sb.table("articles").update({"status": "processing"}).eq("id", article_id).execute()
 
     try:
-        # 1. 本文抽出（言語判定込み）
-        title, body, lang = await extract_article(source_url)
+        # 1. 本文抽出（言語判定・公開日時込み）
+        title, body, lang, published_at = await extract_article(source_url)
         if not _article_exists(sb, article_id):  # キャンセル(削除)済み
             return
-        sb.table("articles").update(
-            {"title": title, "source_lang": lang}
-        ).eq("id", article_id).execute()
+        meta: dict = {"title": title, "source_lang": lang}
+        if published_at:  # 取れたときだけ更新（取れなければ null のまま）
+            meta["published_at"] = published_at
+        sb.table("articles").update(meta).eq("id", article_id).execute()
 
         # 2. 対向言語へ翻訳
         target: Lang = "en" if lang == "ja" else "ja"
@@ -340,8 +341,85 @@ def _html_to_text(html: str) -> str:
     return text.strip()[:24000]
 
 
-async def extract_article(url: str) -> tuple[str, str, Lang]:
-    """記事URLを取得し、GPT-4o でタイトル・本文・言語をJSON抽出する。"""
+import datetime as _dt  # noqa: E402
+
+# 公開日時の抽出。構造化データ(JSON-LD/meta/<time>)から拾う方が GPT 推測より確実。
+# _html_to_text はタグを落とすので、この抽出は生HTMLに対して行う。
+_JSONLD_PUB = re.compile(r'"datePublished"\s*:\s*"([^"]+)"', re.IGNORECASE)
+_META_TAG = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+_META_ATTR = re.compile(
+    r"""([\w:.-]+)\s*=\s*"([^"]*)"|([\w:.-]+)\s*=\s*'([^']*)'"""
+)
+_TIME_TAG = re.compile(
+    r"""<time\b[^>]*\bdatetime\s*=\s*["']([^"']+)["']""", re.IGNORECASE
+)
+# meta の property/name/itemprop がこれらなら公開日時とみなす（小文字比較）。
+_PUB_KEYS = {
+    "article:published_time",
+    "og:published_time",
+    "datepublished",
+    "pubdate",
+    "publishdate",
+    "publish-date",
+    "date",
+    "dc.date.issued",
+    "dc.date",
+    "sailthru.date",
+}
+
+
+def _parse_dt(s: str) -> _dt.datetime | None:
+    """様々な日時表記を datetime へ。失敗したら None。"""
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ):
+        try:
+            return _dt.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_published(html: str) -> str | None:
+    """生HTMLから記事の公開日時を ISO 文字列で抽出（取れなければ None）。"""
+    # 1. JSON-LD の datePublished（ニュース記事で最も信頼できる）
+    m = _JSONLD_PUB.search(html)
+    if m and (dt := _parse_dt(m.group(1))):
+        return dt.isoformat()
+    # 2. <meta> の各種公開日時キー（属性順に依存しないよう属性を辞書化）
+    for tag in _META_TAG.findall(html):
+        attrs: dict[str, str] = {}
+        for a in _META_ATTR.finditer(tag):
+            key = (a.group(1) or a.group(3) or "").lower()
+            val = a.group(2) if a.group(2) is not None else a.group(4)
+            attrs[key] = val or ""
+        label = attrs.get("property") or attrs.get("name") or attrs.get("itemprop")
+        if label and label.lower() in _PUB_KEYS and (dt := _parse_dt(attrs.get("content", ""))):
+            return dt.isoformat()
+    # 3. <time datetime="...">
+    m = _TIME_TAG.search(html)
+    if m and (dt := _parse_dt(m.group(1))):
+        return dt.isoformat()
+    return None
+
+
+async def extract_article(url: str) -> tuple[str, str, Lang, str | None]:
+    """記事URLを取得し、GPT-4o でタイトル・本文・言語をJSON抽出する。
+
+    併せて生HTMLから公開日時(published_at)を構造化データから拾う（取れなければ None）。
+    """
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=30,
@@ -349,6 +427,7 @@ async def extract_article(url: str) -> tuple[str, str, Lang]:
     ) as client:
         resp = await client.get(url)
         resp.raise_for_status()
+    published = _extract_published(resp.text)
     cleaned = _html_to_text(resp.text)
 
     client = _openai()
@@ -371,7 +450,7 @@ async def extract_article(url: str) -> tuple[str, str, Lang]:
     )
     data = json.loads(completion.choices[0].message.content or "{}")
     lang: Lang = "en" if data.get("lang") == "en" else "ja"
-    return data.get("title", "").strip(), data.get("body", "").strip(), lang
+    return data.get("title", "").strip(), data.get("body", "").strip(), lang, published
 
 
 async def translate(text: str, target: Lang) -> str:

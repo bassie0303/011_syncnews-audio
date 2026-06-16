@@ -35,7 +35,8 @@
 - [ ] **履歴（記事）の削除** — 一覧から記事を削除（DB行＋Storage音声も合わせて削除）。スワイプ削除 or 長押しメニュー。
 - [ ] **コンバートのキャンセル** — 変換中（processing）の記事を中断できるようにする。バックエンド側のジョブ中断＋status遷移（cancelled 等）の設計が必要。
 - [ ] **コンバート開始（受付）の明確化** — URL登録時に「受け付けました／変換中」を分かりやすくフィードバック（トースト/一覧の即時pending表示/プログレス表現）。現状はスナックバーのみ。
-- [ ] **記事の掲載日付・時刻の表示** — 一覧/詳細に記事の公開日時を表示。抽出時に記事のpublished日時を取得して保持（`articles` に列追加）。
+- [x] **記事の掲載日付・時刻の表示** — 抽出時に生HTMLの構造化データ（JSON-LD `datePublished` / `<meta article:published_time>` 等 / `<time datetime>`）から公開日時を取得し `articles.published_at` に保存、一覧カードとプレーヤーAppBarに表示。
+  - DDL: `supabase/migration_published_at.sql`（`alter table articles add column if not exists published_at timestamptz;`）を本番に適用必須。
 
 ## 入力導線
 - [x] **閲覧中の記事からコンバート登録（ブックマークレット）** — PCブラウザのブックマークレットで、見ているページをワンクリック登録。

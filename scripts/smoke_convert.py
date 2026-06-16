@@ -43,10 +43,10 @@ async def run(url: str) -> None:
     _OUT.mkdir(exist_ok=True)
 
     print(f"[1/4] 抽出: {url}")
-    title, body, src_lang = await extract_article(url)
+    title, body, src_lang, published = await extract_article(url)
     tgt_lang = "en" if src_lang == "ja" else "ja"
     (_OUT / "source.txt").write_text(f"# {title}\n\n{body}", encoding="utf-8")
-    print(f"  title={title!r} lang={src_lang} 本文{len(body)}字")
+    print(f"  title={title!r} lang={src_lang} 公開={published} 本文{len(body)}字")
 
     print(f"[2/4] 翻訳: {src_lang} -> {tgt_lang}")
     translated = await translate(body, tgt_lang)

@@ -88,7 +88,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.article.title, maxLines: 1)),
+      appBar: AppBar(
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.article.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            if (widget.article.publishedLabel != null)
+              Text(
+                widget.article.publishedLabel!,
+                style: TextStyle(
+                    fontSize: 11, color: Colors.white.withOpacity(0.75)),
+              ),
+          ],
+        ),
+      ),
       body: Column(
         children: [
           Expanded(child: _buildSyncedText()),
