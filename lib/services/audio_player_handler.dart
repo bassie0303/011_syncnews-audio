@@ -1,4 +1,5 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:just_audio/just_audio.dart';
 
 /// バックグラウンド音声再生の中核（PRD 3-4 / 技術課題①）。
@@ -13,6 +14,9 @@ import 'package:just_audio/just_audio.dart';
 class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer _player = AudioPlayer();
 
+  /// 割り込み（電話・他アプリ）で一時停止したか。終了後の自動再開判定に使う。
+  bool _interruptedWhilePlaying = false;
+
   /// 同期プレーヤーが購読する再生位置（ミリ秒精度）。
   Stream<Duration> get positionStream => _player.positionStream;
   Stream<Duration?> get durationStream => _player.durationStream;
@@ -21,6 +25,47 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
   SyncAudioHandler() {
     // just_audio の状態を audio_service(=OSセッション) の PlaybackState へ橋渡し。
     _player.playbackEventStream.map(_toPlaybackState).pipe(playbackState);
+  }
+
+  /// オーディオフォーカスと割り込み制御を設定する（main から init 時に1回）。
+  ///
+  /// これを呼ばないと、フォーカス未取得で「音が出ない／途中で止まる」、
+  /// ダッキング（通知音などでの一時減音）から戻らず「音が極端に小さいまま」、
+  /// 割り込み後に再生が再開しない、といった不具合が起きる。
+  Future<void> configureSession() async {
+    final session = await AudioSession.instance;
+    await session.configure(const AudioSessionConfiguration.music());
+
+    // 割り込み（電話・他アプリの音声・通知音など）への対応。
+    session.interruptionEventStream.listen((event) {
+      if (event.begin) {
+        switch (event.type) {
+          case AudioInterruptionType.duck:
+            // 一時的なダッキング: 音量を下げる（終了時に戻す）。
+            _player.setVolume(0.3);
+          case AudioInterruptionType.pause:
+          case AudioInterruptionType.unknown:
+            // 再生中だったら覚えておき、割り込み終了後に自動再開する。
+            _interruptedWhilePlaying = _player.playing;
+            if (_interruptedWhilePlaying) _player.pause();
+        }
+      } else {
+        switch (event.type) {
+          case AudioInterruptionType.duck:
+            // ダッキング解除 → 音量を戻す（小音量のまま固定されるのを防ぐ）。
+            _player.setVolume(1.0);
+          case AudioInterruptionType.pause:
+          case AudioInterruptionType.unknown:
+            if (_interruptedWhilePlaying) {
+              _interruptedWhilePlaying = false;
+              _player.play();
+            }
+        }
+      }
+    });
+
+    // ヘッドホンが抜かれたら一時停止（スピーカーから突然鳴るのを防ぐ）。
+    session.becomingNoisyEventStream.listen((_) => _player.pause());
   }
 
   /// 指定言語トラックの音声をロードして再生準備。
@@ -37,6 +82,9 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
       artist: lang == 'ja' ? '日本語' : 'English',
       // duration はロード後に確定するので後段で更新される
     ));
+    // 念のため音量を全開に戻す（前トラックでダッキングが残ると、特に言語切替後の
+    // 英語音声が小さいままになる事故を防ぐ防御的リセット）。
+    await _player.setVolume(1.0);
     await _player.setUrl(url, initialPosition: initialPosition);
     final dur = _player.duration;
     if (dur != null) {
@@ -124,8 +172,8 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
 }
 
 /// main() で一度だけ呼び出してハンドラを起動する。
-Future<SyncAudioHandler> initAudioService() {
-  return AudioService.init(
+Future<SyncAudioHandler> initAudioService() async {
+  final handler = await AudioService.init(
     builder: () => SyncAudioHandler(),
     config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.syncnews.audio.channel',
@@ -136,4 +184,7 @@ Future<SyncAudioHandler> initAudioService() {
       fastForwardInterval: Duration(seconds: 15),
     ),
   );
+  // フォーカス・割り込み制御を有効化（再生開始前に確定させる）。
+  await handler.configureSession();
+  return handler;
 }
