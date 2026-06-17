@@ -63,6 +63,7 @@ perms = """    <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
 """
 # <application 直前に権限を挿入
 xml = re.sub(r"(\n\s*<application\b)", "\n" + perms + r"\1", xml, count=1)

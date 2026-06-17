@@ -3,6 +3,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 画面オフ/スリープ中もネットワーク音源の再生を継続するため（ExoPlayerのwake mode）。
+         無いと画面オフでCPU/WiFiが落ち「通知は残るが音だけ止まる」状態になる。 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
     <application
         android:label="syncnews_audio"
