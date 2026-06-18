@@ -32,10 +32,14 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
     // リピート: 記事末尾に達したら、ONなら先頭へ戻して再生し直す。
     // LoopMode.one は setUrl 単一音源だと環境により効かないため、完了イベントで
     // 明示的にループさせる（確実・予測可能）。
-    _player.processingStateStream.listen((state) {
+    // 唐突に次巡が始まると一巡したと分かりにくいため、先頭へ戻す前に
+    // 1.5秒の無音の「間」を入れて区切りを示す。
+    _player.processingStateStream.listen((state) async {
       if (state == ProcessingState.completed && _repeat) {
-        _player.seek(Duration.zero);
-        _player.play();
+        await Future<void>.delayed(const Duration(milliseconds: 1500));
+        if (!_repeat) return; // 待機中にリピートOFFされたら何もしない
+        await _player.seek(Duration.zero);
+        await _player.play();
       }
     });
   }
