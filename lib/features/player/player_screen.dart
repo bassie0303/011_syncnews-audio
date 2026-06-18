@@ -27,6 +27,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String _textLang = 'ja'; // 表示テキストの言語
   String _audioLang = 'ja'; // 再生音声の言語
   double _speed = 1.0;
+  bool _repeat = false; // 記事全体のリピート再生
+
+  /// 表示×音声の4プリセット（PRD 3-1 / バックログ「1タップ切替」）。
+  /// (textLang, audioLang) の組。
+  static const List<(String, String)> _presets = [
+    ('ja', 'ja'), // 日本語表示 × 日本語音声
+    ('en', 'en'), // 英語表示 × 英語音声
+    ('ja', 'en'), // 日本語表示 × 英語音声
+    ('en', 'ja'), // 英語表示 × 日本語音声
+  ];
 
   @override
   void initState() {
@@ -52,7 +62,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
       lang: lang,
     );
     await widget.audio.setSpeed(_speed);
+    await widget.audio.setRepeat(_repeat);
     if (!initial) widget.audio.play();
+  }
+
+  /// プリセット適用: 表示・音声をまとめて切り替える（1タップ）。
+  /// 既存の個別切替メソッドに委譲するので、差分だけが反映される
+  /// （音声が同じならリロードしない／現在地マッピングもそのまま効く）。
+  Future<void> _applyPreset(String textLang, String audioLang) async {
+    _switchTextLang(textLang);
+    await _switchAudioLang(audioLang);
   }
 
   // --- 言語切替（迷子防止: 現在地を新トラックへマップ）---
@@ -74,6 +93,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       initialPosition: mapped,
     );
     await widget.audio.setSpeed(_speed);
+    await widget.audio.setRepeat(_repeat);
     widget.audio.play();
   }
 
@@ -165,6 +185,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // プリセット（表示×音声の4組を1タップ）＋ リピート
+          _buildPresetRow(),
+          const SizedBox(height: 12),
           // 言語切替スイッチ（テキスト/音声を独立に）
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -219,6 +242,54 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  // --- プリセット4種（表示×音声）＋ リピート ---
+  Widget _buildPresetRow() {
+    final primary = Theme.of(context).colorScheme.primary;
+    String lbl(String l) => l == 'ja' ? '日' : '英';
+    return Row(
+      children: [
+        // 表示=📄 / 音声=🔊 の凡例つきプリセットチップを横並び（はみ出す端末向けに横スクロール）
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final (t, a) in _presets) ...[
+                  ChoiceChip(
+                    selected: t == _textLang && a == _audioLang,
+                    labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                    label: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.subject, size: 14),
+                        Text(lbl(t)),
+                        const SizedBox(width: 5),
+                        const Icon(Icons.volume_up, size: 14),
+                        Text(lbl(a)),
+                      ],
+                    ),
+                    onSelected: (_) => _applyPreset(t, a),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+              ],
+            ),
+          ),
+        ),
+        // リピート（記事全体の繰り返し）トグル
+        IconButton(
+          tooltip: _repeat ? 'リピート: ON' : 'リピート: OFF',
+          icon: Icon(_repeat ? Icons.repeat_on : Icons.repeat),
+          color: _repeat ? primary : null,
+          onPressed: () {
+            setState(() => _repeat = !_repeat);
+            widget.audio.setRepeat(_repeat);
+          },
+        ),
+      ],
     );
   }
 

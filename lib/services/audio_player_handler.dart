@@ -112,6 +112,11 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
   @override
   Future<void> setSpeed(double speed) => _player.setSpeed(speed);
 
+  /// 記事全体のリピート再生。LoopMode.one は「現在の音源（=この記事）」を
+  /// 末尾まで再生後に先頭へ戻して繰り返す。OFF で通常再生に戻す。
+  Future<void> setRepeat(bool on) =>
+      _player.setLoopMode(on ? LoopMode.one : LoopMode.off);
+
   /// 「30秒巻き戻し」: ボタン & SeekHandler 経由の rewind 両対応
   @override
   Future<void> rewind() => _seekBy(const Duration(seconds: -30));
