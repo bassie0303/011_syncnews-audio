@@ -37,12 +37,17 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
     await session.configure(const AudioSessionConfiguration.music());
 
     // 割り込み（電話・他アプリの音声・通知音など）への対応。
+    //
+    // 重要: ダッキング（一時減音）は Android が OS レベルで自動的に行い、
+    // 解除も OS が行う。アプリが自前で setVolume を下げると、復帰イベントを
+    // 取りこぼした際に「小音量のまま固定」される事故になる（数分で音量が下がる症状）。
+    // そのため duck では音量を下げず、復帰方向（1.0 へ戻す）だけ持つ。
     session.interruptionEventStream.listen((event) {
       if (event.begin) {
         switch (event.type) {
           case AudioInterruptionType.duck:
-            // 一時的なダッキング: 音量を下げる（終了時に戻す）。
-            _player.setVolume(0.3);
+            // OS のダッキングに任せる（自前では何もしない）。
+            break;
           case AudioInterruptionType.pause:
           case AudioInterruptionType.unknown:
             // 再生中だったら覚えておき、割り込み終了後に自動再開する。
@@ -50,16 +55,11 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
             if (_interruptedWhilePlaying) _player.pause();
         }
       } else {
-        switch (event.type) {
-          case AudioInterruptionType.duck:
-            // ダッキング解除 → 音量を戻す（小音量のまま固定されるのを防ぐ）。
-            _player.setVolume(1.0);
-          case AudioInterruptionType.pause:
-          case AudioInterruptionType.unknown:
-            if (_interruptedWhilePlaying) {
-              _interruptedWhilePlaying = false;
-              _player.play();
-            }
+        // 割り込み終了。いずれの種類でも音量は必ず全開へ戻す（減音残りの保険）。
+        _player.setVolume(1.0);
+        if (_interruptedWhilePlaying) {
+          _interruptedWhilePlaying = false;
+          _player.play();
         }
       }
     });
