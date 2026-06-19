@@ -20,6 +20,9 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
   /// 記事全体のリピート再生フラグ。末尾到達時に先頭へ戻して再生し直す。
   bool _repeat = false;
 
+  /// スリープタイマー「この記事の最後まで」用。末尾到達で停止する（リピートより優先）。
+  bool _stopAtEnd = false;
+
   /// 同期プレーヤーが購読する再生位置（ミリ秒精度）。
   Stream<Duration> get positionStream => _player.positionStream;
   Stream<Duration?> get durationStream => _player.durationStream;
@@ -35,7 +38,14 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
     // 唐突に次巡が始まると一巡したと分かりにくいため、先頭へ戻す前に
     // 1.5秒の無音の「間」を入れて区切りを示す。
     _player.processingStateStream.listen((state) async {
-      if (state == ProcessingState.completed && _repeat) {
+      if (state != ProcessingState.completed) return;
+      // スリープタイマー「最後まで」はリピートより優先で停止する。
+      if (_stopAtEnd) {
+        _stopAtEnd = false;
+        await _player.pause();
+        return;
+      }
+      if (_repeat) {
         await Future<void>.delayed(const Duration(milliseconds: 1500));
         if (!_repeat) return; // 待機中にリピートOFFされたら何もしない
         await _player.seek(Duration.zero);
@@ -43,6 +53,9 @@ class SyncAudioHandler extends BaseAudioHandler with SeekHandler {
       }
     });
   }
+
+  /// スリープタイマー「この記事の最後まで」の予約ON/OFF（末尾で停止・リピート優先）。
+  void setStopAtEnd(bool on) => _stopAtEnd = on;
 
   /// オーディオフォーカスと割り込み制御を設定する（main から init 時に1回）。
   ///

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart' show ProcessingState;
 import '../../models/article.dart';
 import '../../models/sync_segment.dart';
 import '../../services/audio_player_handler.dart';
@@ -39,8 +40,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _speed = 1.0;
   bool _repeat = false; // 記事全体のリピート再生
 
-  Timer? _sleepTimer; // スリープタイマー（nullで無効）
+  Timer? _sleepTimer; // スリープタイマー（固定分。nullで無効）
   Duration? _sleepRemaining; // 残り時間（表示用）
+  bool _sleepAtEnd = false; // 「この記事の最後まで」予約中か
+  StreamSubscription<ProcessingState>? _stateSub;
 
   /// 表示×音声の4プリセット（PRD 3-1 / バックログ「1タップ切替」）。
   /// (textLang, audioLang) の組。
@@ -59,6 +62,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // 音声インデックス→テキストの自動スクロール
     _sync.currentIndex.addListener(() {
       _scroll.ensureVisible(_sync.currentIndex.value);
+    });
+    // 「この記事の最後まで」予約が末尾で発火したらUIを解除して通知する
+    // （実際の停止はハンドラがリピートより優先して行う）。
+    _stateSub = widget.audio.player.processingStateStream.listen((state) {
+      if (state == ProcessingState.completed && _sleepAtEnd && mounted) {
+        setState(() => _sleepAtEnd = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('スリープタイマーで再生を停止しました')),
+        );
+      }
     });
   }
 
@@ -128,27 +141,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// スリープタイマー設定。minutes: 0=オフ / -1=この記事の最後まで / それ以外=分。
   void _setSleep(int minutes) {
     _sleepTimer?.cancel();
+    widget.audio.setStopAtEnd(false); // いったん「最後まで」予約を解除
     final messenger = ScaffoldMessenger.of(context);
+
     if (minutes == 0) {
       setState(() {
         _sleepTimer = null;
         _sleepRemaining = null;
+        _sleepAtEnd = false;
       });
       messenger.showSnackBar(
         const SnackBar(content: Text('スリープタイマーをオフにしました')),
       );
       return;
     }
-    Duration total;
+
     if (minutes == -1) {
-      // この記事の最後まで＝現在位置から残りの再生時間
-      final dur = widget.audio.player.duration ?? Duration.zero;
-      total = dur - widget.audio.player.position;
-      if (total <= Duration.zero) return;
-    } else {
-      total = Duration(minutes: minutes);
+      // 「この記事の最後まで」は完了イベントで停止（リピートより優先・速度にも左右されない）。
+      widget.audio.setStopAtEnd(true);
+      setState(() {
+        _sleepTimer = null;
+        _sleepRemaining = null;
+        _sleepAtEnd = true;
+      });
+      messenger.showSnackBar(
+        const SnackBar(content: Text('スリープタイマー: この記事の最後で停止')),
+      );
+      return;
     }
-    setState(() => _sleepRemaining = total);
+
+    // 固定分は壁時計タイマーで停止（リピート中でも確実に止まる）。
+    setState(() {
+      _sleepAtEnd = false;
+      _sleepRemaining = Duration(minutes: minutes);
+    });
     _sleepTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       final left = (_sleepRemaining ?? Duration.zero) - const Duration(seconds: 1);
       if (left <= Duration.zero) {
@@ -167,9 +193,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         setState(() => _sleepRemaining = left);
       }
     });
-    final label = minutes == -1 ? 'この記事の最後' : '$minutes分後';
     messenger.showSnackBar(
-      SnackBar(content: Text('スリープタイマー: $label に停止')),
+      SnackBar(content: Text('スリープタイマー: $minutes分後に停止')),
     );
   }
 
@@ -328,7 +353,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   // --- スリープタイマー（AppBar右上）---
   Widget _buildSleepAction() {
-    final active = _sleepTimer != null;
+    final active = _sleepTimer != null || _sleepAtEnd;
     return PopupMenuButton<int>(
       tooltip: 'スリープタイマー',
       onSelected: _setSleep,
@@ -350,6 +375,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
               const SizedBox(width: 4),
               Text(_fmtRemaining(_sleepRemaining!),
                   style: const TextStyle(fontSize: 12)),
+            ] else if (_sleepAtEnd) ...[
+              const SizedBox(width: 4),
+              const Text('最後', style: TextStyle(fontSize: 12)),
             ],
           ],
         ),
@@ -408,6 +436,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _sleepTimer?.cancel();
+    _stateSub?.cancel();
+    widget.audio.setStopAtEnd(false); // 画面を離れたら「最後まで」予約を残さない
     _sync.dispose();
     super.dispose();
   }
