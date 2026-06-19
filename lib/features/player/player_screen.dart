@@ -1,9 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../../models/article.dart';
 import '../../models/sync_segment.dart';
 import '../../services/audio_player_handler.dart';
 import '../../theme/app_theme.dart';
 import 'sync_controller.dart';
+
+/// プレーヤーの言語選好（記事をまたいで引き継ぐ）。
+/// 最後に使った「表示×音声」のプリセットを、次に開く記事の既定にする。
+/// アプリ起動中のみ保持（永続化は将来検討）。
+class PlaybackPrefs {
+  static String textLang = 'ja';
+  static String audioLang = 'ja';
+}
 
 /// 同期プレーヤー詳細画面（PRD 3-3 / 3-4）。
 ///
@@ -24,10 +34,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late final SyncController _sync = SyncController(widget.audio);
   final ItemScrollHelper _scroll = ItemScrollHelper();
 
-  String _textLang = 'ja'; // 表示テキストの言語
-  String _audioLang = 'ja'; // 再生音声の言語
+  String _textLang = PlaybackPrefs.textLang; // 表示テキストの言語（前回選好を引き継ぐ）
+  String _audioLang = PlaybackPrefs.audioLang; // 再生音声の言語（同上）
   double _speed = 1.0;
   bool _repeat = false; // 記事全体のリピート再生
+
+  Timer? _sleepTimer; // スリープタイマー（nullで無効）
+  Duration? _sleepRemaining; // 残り時間（表示用）
 
   /// 表示×音声の4プリセット（PRD 3-1 / バックログ「1タップ切替」）。
   /// (textLang, audioLang) の組。
@@ -84,6 +97,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       newSegments: newSegments,
     );
     setState(() => _audioLang = lang);
+    PlaybackPrefs.audioLang = lang; // 次の記事へ引き継ぐ
     final track = widget.article.track(lang)!;
     await widget.audio.loadTrack(
       url: track.audioUrl,
@@ -100,9 +114,69 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _switchTextLang(String lang) {
     if (lang == _textLang) return;
     setState(() => _textLang = lang);
+    PlaybackPrefs.textLang = lang; // 次の記事へ引き継ぐ
     // テキストのセグメントを差し替えるが、ja/en は同じ index 体系なので
     // 現在のハイライト位置は維持する（一時停止中もハイライトが消えない）。
     _sync.setSegments(_displaySegments, keepIndex: true);
+  }
+
+  /// 再生位置を記事の先頭へ戻す（同期ハイライトも追従する）。
+  void _restart() {
+    widget.audio.seek(Duration.zero);
+  }
+
+  /// スリープタイマー設定。minutes: 0=オフ / -1=この記事の最後まで / それ以外=分。
+  void _setSleep(int minutes) {
+    _sleepTimer?.cancel();
+    final messenger = ScaffoldMessenger.of(context);
+    if (minutes == 0) {
+      setState(() {
+        _sleepTimer = null;
+        _sleepRemaining = null;
+      });
+      messenger.showSnackBar(
+        const SnackBar(content: Text('スリープタイマーをオフにしました')),
+      );
+      return;
+    }
+    Duration total;
+    if (minutes == -1) {
+      // この記事の最後まで＝現在位置から残りの再生時間
+      final dur = widget.audio.player.duration ?? Duration.zero;
+      total = dur - widget.audio.player.position;
+      if (total <= Duration.zero) return;
+    } else {
+      total = Duration(minutes: minutes);
+    }
+    setState(() => _sleepRemaining = total);
+    _sleepTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      final left = (_sleepRemaining ?? Duration.zero) - const Duration(seconds: 1);
+      if (left <= Duration.zero) {
+        t.cancel();
+        widget.audio.pause();
+        if (mounted) {
+          setState(() {
+            _sleepTimer = null;
+            _sleepRemaining = null;
+          });
+          messenger.showSnackBar(
+            const SnackBar(content: Text('スリープタイマーで再生を停止しました')),
+          );
+        }
+      } else {
+        setState(() => _sleepRemaining = left);
+      }
+    });
+    final label = minutes == -1 ? 'この記事の最後' : '$minutes分後';
+    messenger.showSnackBar(
+      SnackBar(content: Text('スリープタイマー: $label に停止')),
+    );
+  }
+
+  static String _fmtRemaining(Duration d) {
+    final m = d.inMinutes;
+    final s = d.inSeconds % 60;
+    return '$m:${s.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -122,6 +196,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
           ],
         ),
+        actions: [_buildSleepAction()],
       ),
       body: Column(
         children: [
@@ -210,7 +285,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               IconButton(
-                iconSize: 34,
+                iconSize: 30,
+                tooltip: '最初に戻る',
+                icon: const Icon(Icons.skip_previous),
+                onPressed: _restart, // 記事の先頭へ
+              ),
+              IconButton(
+                iconSize: 32,
                 icon: const Icon(Icons.replay_30),
                 onPressed: widget.audio.rewind, // 30秒戻し
               ),
@@ -227,7 +308,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 },
               ),
               IconButton(
-                iconSize: 34,
+                iconSize: 32,
                 icon: const Icon(Icons.forward_10), // 15秒送り（最寄りアイコン）
                 onPressed: widget.audio.fastForward,
               ),
@@ -241,6 +322,37 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  // --- スリープタイマー（AppBar右上）---
+  Widget _buildSleepAction() {
+    final active = _sleepTimer != null;
+    return PopupMenuButton<int>(
+      tooltip: 'スリープタイマー',
+      onSelected: _setSleep,
+      itemBuilder: (ctx) => const [
+        PopupMenuItem(value: 0, child: Text('オフ')),
+        PopupMenuItem(value: 15, child: Text('15分後')),
+        PopupMenuItem(value: 30, child: Text('30分後')),
+        PopupMenuItem(value: 45, child: Text('45分後')),
+        PopupMenuItem(value: 60, child: Text('60分後')),
+        PopupMenuItem(value: -1, child: Text('この記事の最後まで')),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(active ? Icons.bedtime : Icons.bedtime_outlined),
+            if (_sleepRemaining != null) ...[
+              const SizedBox(width: 4),
+              Text(_fmtRemaining(_sleepRemaining!),
+                  style: const TextStyle(fontSize: 12)),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -295,6 +407,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    _sleepTimer?.cancel();
     _sync.dispose();
     super.dispose();
   }
