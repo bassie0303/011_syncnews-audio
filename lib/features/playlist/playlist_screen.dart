@@ -52,7 +52,9 @@ class PlaylistScreen extends StatelessWidget {
                     )
                   : ListView.separated(
                       physics: const AlwaysScrollableScrollPhysics(),
-                      padding: const EdgeInsets.all(16),
+                      // 下に余白を確保し、最後の記事の再生/⋮ボタンが
+                      // 追加FAB(右下)に隠れて押しにくくなるのを防ぐ。
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
                       itemCount: articles.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 12),
                       itemBuilder: (context, i) => _ArticleCard(
