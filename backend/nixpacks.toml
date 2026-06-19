@@ -1,0 +1,5 @@
+# Azure Speech SDK のランタイム依存（Linux）。
+# SDK は OpenSSL と ALSA(libasound2) にリンクするため、apt で導入しておく。
+# 無いと `import azure.cognitiveservices.speech` がネイティブライブラリ未解決で失敗する。
+[phases.setup]
+aptPkgs = ["libasound2", "libssl3", "ca-certificates"]

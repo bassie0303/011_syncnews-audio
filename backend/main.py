@@ -18,6 +18,7 @@ Edge Function から移管した理由:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -50,8 +51,10 @@ Lang = Literal["ja", "en"]
 
 # 抽出・翻訳に使う GPT モデル。
 _GPT_MODEL = "gpt-4o"
-# ElevenLabs の多言語モデル（日英ともこの1モデルで可）。
+# ElevenLabs の多言語モデル（英語トラックに使用）。
 _ELEVEN_MODEL = "eleven_multilingual_v2"
+# 日本語TTSの Azure ニューラル音声（環境変数で上書き可。既定は女性 Nanami）。
+_AZURE_VOICE_JA = os.environ.get("AZURE_VOICE_JA", "ja-JP-NanamiNeural")
 
 
 def _openai() -> AsyncOpenAI:
@@ -319,7 +322,9 @@ async def _run_pipeline(article_id: str, source_url: str) -> None:
         # クレジットガード: 重いTTSの前に「必要文字数」と「残量」を比較する。
         # 足りなければ TTS を一切実行せず failed にして理由を残し、課金を防ぐ。
         # 残量取得に失敗したらガードせず従来通り続行（外部API障害で止めない）。
-        needed = _tts_char_count(body, lang) + _tts_char_count(translated, target)
+        # ※ ElevenLabs は英語トラックのみ（日本語は Azure F0 無料）。英語分だけ数える。
+        english_text = body if lang == "en" else translated
+        needed = len(english_text)
         try:
             remaining = (await _eleven_subscription())["remaining"]
         except Exception:  # noqa: BLE001
@@ -670,28 +675,72 @@ def _to_reading_ja(text: str) -> str:
     return "".join(parts)
 
 
+def _azure_tts_ja(sentences: list[str]) -> tuple[bytes, list[dict]]:
+    """日本語TTS（Azure Speech）。原文の漢字をそのまま渡してネイティブに読ませ、
+    SSMLブックマークで各文の開始時刻を取得して文単位segmentを作る（ブロッキング）。
+
+    ・数字/助数詞/拗音/固有名詞を Azure が正しく読むため、カナ変換は不要。
+    ・<bookmark mark='i'/> を各文の直前に置くと、bookmark_reached の audio_offset
+      がその文の開始時刻（100ns単位）になる。文末＝次文の開始（最後は総尺）。
+    """
+    import azure.cognitiveservices.speech as speechsdk  # 遅延import（起動を軽く）
+
+    if not sentences:
+        return b"", []
+
+    cfg = speechsdk.SpeechConfig(
+        subscription=os.environ["AZURE_SPEECH_KEY"],
+        region=os.environ["AZURE_SPEECH_REGION"],
+    )
+    cfg.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3
+    )
+    synth = speechsdk.SpeechSynthesizer(speech_config=cfg, audio_config=None)
+
+    marks: list[tuple[int, float]] = []  # (文index, 開始ms)
+    synth.bookmark_reached.connect(
+        lambda e: marks.append((int(e.text), e.audio_offset / 10000))
+    )
+
+    body = "".join(
+        f"<bookmark mark='{i}'/>{_html.escape(s)}" for i, s in enumerate(sentences)
+    )
+    ssml = (
+        "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' "
+        f"xml:lang='ja-JP'><voice name='{_AZURE_VOICE_JA}'>{body}</voice></speak>"
+    )
+    result = synth.speak_ssml_async(ssml).get()
+    if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
+        detail = ""
+        if result.reason == speechsdk.ResultReason.Canceled:
+            c = result.cancellation_details
+            detail = f"{c.reason}: {c.error_details}"
+        raise RuntimeError(f"Azure TTS失敗: {result.reason} {detail}")
+
+    audio = result.audio_data
+    total_ms = result.audio_duration.total_seconds() * 1000
+    starts = dict(marks)  # 文index -> 開始ms
+    segments = [
+        {
+            "text": s,
+            "start_ms": round(starts.get(i, 0)),
+            "end_ms": round(starts.get(i + 1, total_ms)),
+        }
+        for i, s in enumerate(sentences)
+    ]
+    return audio, segments
+
+
 async def synthesize_segments(display_text: str, lang: Lang) -> tuple[bytes, list[dict]]:
     """表示テキストから、音声＋文単位セグメント（表示用テキスト＋タイムスタンプ）を生成。
 
-    ja は漢字の誤読を避けるため合成にはカナ読みを使い、segments の text には
-    元の漢字の文を入れる（タイミングはカナ合成から、文単位で1:1対応付け）。
-    en はそのまま。
+    ・ja: Azure Speech。原文の漢字のままネイティブに読み、SSMLブックマークで
+      文単位タイムスタンプを取得（数字/助数詞/拗音も正しい）。SDK はブロッキング
+      なので別スレッドで実行しイベントループを塞がない。
+    ・en: ElevenLabs。文字タイムスタンプを文境界で集約。
     """
-    speech_text = _to_reading_ja(display_text) if lang == "ja" else display_text
-    audio, char_ts = await tts_with_timestamps(speech_text, lang)
-    timing = aggregate_to_sentences(char_ts)
+    if lang == "ja":
+        return await asyncio.to_thread(_azure_tts_ja, _split_sentences(display_text))
 
-    if lang != "ja":
-        return audio, timing
-
-    display_sents = _split_sentences(display_text)
-    n = min(len(timing), len(display_sents))
-    segments = [
-        {
-            "text": display_sents[i],
-            "start_ms": timing[i]["start_ms"],
-            "end_ms": timing[i]["end_ms"],
-        }
-        for i in range(n)
-    ]
-    return audio, segments
+    audio, char_ts = await tts_with_timestamps(display_text, lang)
+    return audio, aggregate_to_sentences(char_ts)
