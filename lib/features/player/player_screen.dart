@@ -17,6 +17,12 @@ class PlaybackPrefs {
   static String audioLang = 'ja';
   static final Map<String, (String, String)> perArticle = {};
 
+  /// 本文の文字サイズ倍率（記事をまたいで引き継ぐ）。既定はやや大きめ。
+  static double textScale = 1.25;
+  static const double textScaleMin = 0.9;
+  static const double textScaleMax = 2.4;
+  static const double textScaleStep = 0.15;
+
   /// 記事を開くときの初期 (textLang, audioLang)。記事個別の記録があればそれを、
   /// なければ直近に使った選好を返す。
   static (String, String) initialFor(String articleId) =>
@@ -45,6 +51,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late String _textLang; // 表示テキストの言語（記事個別の記録 or 直近選好で初期化）
   late String _audioLang; // 再生音声の言語（同上）
   double _speed = 1.0;
+  double _textScale = PlaybackPrefs.textScale; // 本文の文字サイズ倍率（前回値を引き継ぐ）
   bool _repeat = false; // 記事全体のリピート再生
 
   Timer? _sleepTimer; // スリープタイマー（固定分。nullで無効）
@@ -156,6 +163,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
     widget.audio.seek(Duration.zero);
   }
 
+  /// 本文の文字サイズ倍率を増減（範囲内でクランプ・次の記事へ引き継ぐ）。
+  void _bumpTextScale(double delta) {
+    final next = (_textScale + delta)
+        .clamp(PlaybackPrefs.textScaleMin, PlaybackPrefs.textScaleMax);
+    setState(() => _textScale = next);
+    PlaybackPrefs.textScale = next;
+  }
+
   /// スリープタイマー設定。minutes: 0=オフ / -1=この記事の最後まで / それ以外=分。
   void _setSleep(int minutes) {
     _sleepTimer?.cancel();
@@ -239,7 +254,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
           ],
         ),
-        actions: [_buildSleepAction()],
+        actions: [
+          IconButton(
+            tooltip: '文字を小さく',
+            icon: const Icon(Icons.text_decrease),
+            onPressed: _textScale > PlaybackPrefs.textScaleMin
+                ? () => _bumpTextScale(-PlaybackPrefs.textScaleStep)
+                : null,
+          ),
+          IconButton(
+            tooltip: '文字を大きく',
+            icon: const Icon(Icons.text_increase),
+            onPressed: _textScale < PlaybackPrefs.textScaleMax
+                ? () => _bumpTextScale(PlaybackPrefs.textScaleStep)
+                : null,
+          ),
+          _buildSleepAction(),
+        ],
       ),
       body: Column(
         children: [
@@ -276,7 +307,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 child: Text(
                   segments[i].text,
                   style: TextStyle(
-                    fontSize: 18,
+                    fontSize: 18 * _textScale,
                     height: 1.6,
                     fontWeight: isActive ? FontWeight.w700 : FontWeight.w400,
                     color: isActive
