@@ -22,7 +22,7 @@ import asyncio
 import os
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
 
@@ -40,7 +40,14 @@ import html as _html  # noqa: E402
 
 import asyncpg  # noqa: E402
 import httpx  # noqa: E402
-from fastapi import BackgroundTasks, FastAPI, Request  # noqa: E402
+from fastapi import (  # noqa: E402
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+)
 from fastapi.responses import HTMLResponse  # noqa: E402
 from openai import AsyncOpenAI  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
@@ -147,6 +154,72 @@ async def quota() -> dict:
 def _tts_char_count(text: str, lang: Lang) -> int:
     """その言語で ElevenLabs に実際に送る文字数（ja はカナ読み）。"""
     return len(_to_reading_ja(text) if lang == "ja" else text)
+
+
+# ── 認証ゲート（Stage3）: Supabase の JWT で本人確認し user_id を得る ──
+async def _current_user(authorization: Optional[str] = Header(default=None)) -> str:
+    """Authorization: Bearer <access_token> を検証し、ユーザーIDを返す。
+
+    Supabase Auth サーバに get_user(jwt) で問い合わせて検証する（JWT秘密鍵を
+    バックエンドに置かずに済む）。無効なら 401。
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="認証が必要です")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        res = await asyncio.to_thread(lambda: _supabase().auth.get_user(token))
+        uid = res.user.id if res and res.user else None
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=401, detail="トークンが無効です")
+    if not uid:
+        raise HTTPException(status_code=401, detail="トークンが無効です")
+    return uid
+
+
+@app.get("/api/articles")
+async def list_articles(user_id: str = Depends(_current_user)) -> dict:
+    """本人の記事一覧（メタ＋金庫のタイトル）。タイトルは第三者著作物なので
+    本人確認のうえゲート経由で返す（公開スキーマには置かない）。"""
+    conn = await _pg()
+    try:
+        rows = await conn.fetch(
+            """
+            select a.id, a.source_url, a.source_lang, a.status,
+                   a.published_at, a.error, a.created_at, t.title
+            from syncnews.articles a
+            left join syncnews_vault.article_titles t on t.article_id = a.id
+            where a.user_id = $1
+            order by a.created_at desc
+            """,
+            user_id,
+        )
+    finally:
+        await conn.close()
+    return {
+        "ok": True,
+        "articles": [
+            {
+                "id": str(r["id"]),
+                "source_url": r["source_url"],
+                "source_lang": r["source_lang"],
+                "status": r["status"],
+                "title": r["title"],
+                "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+                "error": r["error"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.get("/api/playback/{article_id}")
+async def playback(article_id: str, user_id: str = Depends(_current_user)) -> dict:
+    """再生用ペイロード（本人のみ）: 本文(日英)＋タイトル＋音声6h署名URL。"""
+    payload = await build_playback_payload(article_id, user_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="見つからないか、アクセス権がありません")
+    return {"ok": True, **payload}
 
 
 @app.post("/api/submit")
