@@ -1,5 +1,9 @@
 # Azure Speech SDK のランタイム依存（Linux）。
-# SDK は OpenSSL と ALSA(libasound2) にリンクするため、apt で導入しておく。
+# SDK は OpenSSL と ALSA(libasound) にリンクするため、apt で導入しておく。
 # 無いと `import azure.cognitiveservices.speech` がネイティブライブラリ未解決で失敗する。
+#
+# 注意: Railway の nixpacks 基盤が Ubuntu Noble(24.04) に更新され、time_t(t64)移行で
+# `libasound2` は仮想パッケージ化された。実体は `libasound2t64`。
+# 旧名 `libasound2` を指定すると "has no installation candidate" でビルドが落ちる。
 [phases.setup]
-aptPkgs = ["libasound2", "libssl3", "ca-certificates"]
+aptPkgs = ["libasound2t64", "libssl3", "ca-certificates"]
