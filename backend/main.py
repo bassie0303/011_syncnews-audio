@@ -111,6 +111,9 @@ class ConvertRequest(BaseModel):
 
 class SubmitRequest(BaseModel):
     url: str
+    # 利用者のブラウザで見えているページHTML（任意）。有料会員ページ等、
+    # サーバの匿名取得では本文が取れない記事のために、ブックマークレットが送る。
+    html: Optional[str] = None
 
 
 @app.get("/api/health")
@@ -339,14 +342,37 @@ _SUBMIT_PAGE_TEMPLATE = """<!doctype html>
   function setStatus(msg, cls) { $('status').className = 'status ' + (cls || ''); $('status').textContent = msg; }
   function showLogin() { $('login').style.display = 'block'; setStatus('ログインして登録してください'); }
 
+  // ブックマークレット(=開いた元ページ)から、そのページのHTMLを受け取る。
+  // 有料会員ページでも、利用者が見ている本文をそのまま登録に使える。
+  let pageHtml = null;
+  window.addEventListener('message', (e) => {
+    if (e.source === window.opener && e.data && e.data.t === 'syncnews-html') {
+      pageHtml = e.data.html || null;
+      try { e.source.postMessage('syncnews-ack', e.origin); } catch (_) {}
+    }
+  });
+  function waitForHtml(ms) {
+    return new Promise((resolve) => {
+      if (pageHtml) return resolve();
+      const start = Date.now();
+      const iv = setInterval(() => {
+        if (pageHtml || Date.now() - start > ms) { clearInterval(iv); resolve(); }
+      }, 100);
+    });
+  }
+
   async function doSubmit(token) {
     if (!articleUrl) { setStatus('URLが取得できませんでした', 'err'); return; }
+    setStatus('ページ内容を取得中…');
+    await waitForHtml(2500); // ブックマークレットからのHTML到着を少し待つ
     setStatus('登録中…');
     try {
+      const payload = { url: articleUrl };
+      if (pageHtml) payload.html = pageHtml;
       const res = await fetch('/api/articles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({ url: articleUrl }),
+        body: JSON.stringify(payload),
       });
       if (res.ok) { setStatus('✅ 登録しました！変換を開始しました。', 'ok'); }
       else if (res.status === 401) { setStatus('セッションが切れています。再ログインしてください。', 'err'); showLogin(); }
@@ -397,12 +423,20 @@ def bookmarklet_page(request: Request) -> str:
     # localhost 以外は https に正規化（https の記事ページから余計なリダイレクトを避ける）。
     if base.startswith("http://") and "localhost" not in base and "127.0.0.1" not in base:
         base = "https://" + base[len("http://") :]
-    # javascript: スキームのワンライナー。現在ページURLを付けて /submit を小窓で開く。
+    # javascript: スキームのワンライナー。
+    # 小窓を開き、現在ページのHTML（＝利用者のブラウザで見えている内容。有料会員
+    # 記事でも閲覧権のある本文）を postMessage で小窓へ渡す。ack を受けたら停止。
     code = (
-        "javascript:(function(){window.open('"
-        + base
-        + "/submit?url='+encodeURIComponent(location.href),"
-        "'syncnews','width=440,height=340');})();"
+        "javascript:(function(){"
+        "var O='" + base + "';"
+        "var w=window.open(O+'/submit?url='+encodeURIComponent(location.href),"
+        "'syncnews','width=460,height=500');"
+        "var p={t:'syncnews-html',html:document.documentElement.outerHTML};"
+        "var iv=setInterval(function(){try{w.postMessage(p,O);}catch(e){}},400);"
+        "window.addEventListener('message',function(e){"
+        "if(e.origin===O&&e.data==='syncnews-ack'){clearInterval(iv);}});"
+        "setTimeout(function(){clearInterval(iv);},20000);"
+        "})();"
     )
     safe_code = _html.escape(code, quote=True)
     return f"""<!doctype html>
@@ -640,20 +674,30 @@ def _extract_published(html: str) -> str | None:
     return None
 
 
-async def extract_article(url: str) -> tuple[str, str, Lang, str | None]:
+async def extract_article(
+    url: str, html: Optional[str] = None
+) -> tuple[str, str, Lang, str | None]:
     """記事URLを取得し、GPT-4o でタイトル・本文・言語をJSON抽出する。
 
     併せて生HTMLから公開日時(published_at)を構造化データから拾う（取れなければ None）。
+
+    html を渡した場合はサーバ側で取得せず、その HTML（＝利用者のブラウザで実際に
+    見えているページ）を使う。有料会員ページなど、サーバの匿名取得では本文が
+    取れない記事に対応するため（ブックマークレットがページHTMLを送ってくる）。
     """
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=30,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; SyncNewsBot/0.1)"},
-    ) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-    published = _extract_published(resp.text)
-    cleaned = _html_to_text(resp.text)
+    if html:
+        raw = html
+    else:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; SyncNewsBot/0.1)"},
+        ) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        raw = resp.text
+    published = _extract_published(raw)
+    cleaned = _html_to_text(raw)
 
     client = _openai()
     completion = await client.chat.completions.create(
@@ -1082,12 +1126,15 @@ async def _pg_article_exists(article_id: str) -> bool:
         await conn.close()
 
 
-async def _run_pipeline_v2(article_id: str, owner_id: str, source_url: str) -> None:
+async def _run_pipeline_v2(
+    article_id: str, owner_id: str, source_url: str, html: Optional[str] = None
+) -> None:
     """新経路の変換: 抽出→翻訳→TTS→ persist_article_new（syncnews/vault/非公開バケット）。
-    状態は syncnews.articles.status（直結更新）。本文/タイトル/音声は金庫・非公開へ。"""
+    状態は syncnews.articles.status（直結更新）。本文/タイトル/音声は金庫・非公開へ。
+    html を渡せば取得せずそのHTMLから抽出（有料会員ページ対応）。"""
     await _pg_set_status(article_id, "processing")
     try:
-        title, body, lang, published_at = await extract_article(source_url)
+        title, body, lang, published_at = await extract_article(source_url, html)
         if not await _pg_article_exists(article_id):  # キャンセル(削除)済み
             return
 
@@ -1167,7 +1214,7 @@ async def create_article(
         )
     finally:
         await conn.close()
-    background_tasks.add_task(_run_pipeline_v2, str(aid), user_id, url)
+    background_tasks.add_task(_run_pipeline_v2, str(aid), user_id, url, req.html)
     return {"ok": True, "article_id": str(aid)}
 
 
