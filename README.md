@@ -158,6 +158,26 @@ curl -s localhost:8000/api/health | jq   # キー有無の確認
 # Railway: backend/ を nixpacks でデプロイ（railway.toml 同梱）
 ```
 
+### Supabase スキーマ配置（公開 / 金庫の二スキーマ・著作権隔離）
+
+第三者著作物（記事本文・原文・英訳・見出し）を公開API経路から隔離するため、二つのスキーマに分ける。
+詳細・適用順は `supabase/migrations/README.md`。**SQLは手動適用**（`supabase/migrations/0001..0003`）。
+
+ダッシュボードでの必須設定:
+
+1. **Exposed schemas に `syncnews` だけ追加する**。**`syncnews_vault` は追加しない**（公開ゲート）。
+   Settings → API → Exposed schemas。
+2. **`audio` バケットを Private に**。再生はサーバ発行の短期署名URL（6時間）経由。公開URLは使わない。
+3. **Email 認証を有効化**（RLS の `auth.uid()` による所有者管理）。
+
+| 置き場 | データ | 公開性 |
+| --- | --- | --- |
+| `syncnews`（Exposed・RLS） | 記事メタ（source_url, status, 日付, 所有者 等） | 本人のみ参照可 |
+| `syncnews_vault`（非Exposed） | 見出し・本文・英訳（文単位＋タイムスタンプ） | service_role / バックエンドのみ |
+| Storage（Private bucket） | 音声MP3（`audio/{id}/{lang}.mp3`） | 署名URLのみ |
+
+> 注: 現行本番はまだ旧 `public` スキーマ（anon全開放・公開音声）で稼働中。本構成への移行は別タスク（破壊的・要合意）。
+
 ## 6. Phase1 残タスク
 - [x] `backend/main.py` の GPT-4o 抽出/翻訳 + ElevenLabs TTS 実装
 - [ ] 実APIキーでの疎通テスト（抽出→翻訳→TTS→Storage/DB 保存の一気通貫）

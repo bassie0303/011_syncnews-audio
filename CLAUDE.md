@@ -75,6 +75,23 @@ curl -s localhost:8000/api/health | jq   # 各APIキーの有無を返す
 
 backend は `claude_test/.env`（共有）→ `backend/.env`（個別）の順で読み込み、いずれも `override=True`。
 
+## Supabase 配置 (IMPORTANT)
+
+- 公開プロジェクト。公開データは schema=`syncnews`（Exposed・RLSでマルチテナント制御）。
+- 第三者著作物が絡むデータ（記事本文・原文・英訳・**見出しタイトル**等）は schema=`syncnews_vault`（非Exposed）。
+  anon/authenticated に grant しない。アクセスは service_role / Edge Function 経由のみ。
+- キーは `.env`。**anon key 以外は配布物に載せない**（service_role / Azure / ElevenLabs キーはサーバ専用）。
+- **Exposed schemas に追加するのは `syncnews` のみ。`syncnews_vault` は追加しない**（公開ゲート）。
+- 音声ファイル（本文の二次的著作物）は Storage の**非公開バケット**に置き、再生時に
+  service_role が**短期署名URL（6時間）**を発行して渡す。公開URLは使わない。パス規約 `audio/{article_id}/{lang}.mp3`。
+- 認証は**メールアカウント**（RLS の `auth.uid()` に紐づく所有者管理）。
+- **読み出し経路**: 一覧/状態/Realtime は `syncnews.articles` を直読み（メタのみ＝安全）。
+  本文セグメント（日英）・タイトル・音声署名URL は **Railway バックエンドのゲート `GET /api/playback/{id}`**
+  （本人認証＋所有チェック）経由でまとめて取得する。supabase_flutter の通常操作は `.schema('syncnews')` を使い、
+  vault に触る処理は service_role 側に限定する。
+- 初期化SQL: `supabase/migrations/0001..0003`（手動適用）。手順は `supabase/migrations/README.md`。
+  ※現行本番はまだ旧 `public` スキーマ（anon全開放・公開音声）で稼働しており、本構成への移行は別タスク（破壊的・要合意）。
+
 ## プロジェクト構成
 
 | パス | 役割 |
