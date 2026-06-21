@@ -112,6 +112,23 @@ def diag() -> dict:
         out["azure_import"] = False
         out["azure_error"] = str(e)
     out["azure_key_set"] = bool(os.environ.get("AZURE_SPEECH_KEY"))
+
+    # ネイティブ依存の所在を可視化（libuuid/libasound がどこにあるか・探索パス）。
+    import glob
+    import subprocess
+
+    out["ld_library_path"] = os.environ.get("LD_LIBRARY_PATH")
+    out["files_usrlib"] = sorted(
+        glob.glob("/usr/lib/x86_64-linux-gnu/libuuid*")
+        + glob.glob("/usr/lib/x86_64-linux-gnu/libasound*")
+    )
+    try:
+        ld = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=10).stdout
+        out["ldconfig_uuid_asound"] = [
+            ln.strip() for ln in ld.splitlines() if ("libuuid" in ln or "libasound" in ln)
+        ]
+    except Exception as e:  # noqa: BLE001
+        out["ldconfig_error"] = str(e)
     return out
 
 
